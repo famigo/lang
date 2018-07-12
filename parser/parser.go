@@ -85,12 +85,9 @@ func parse(pkg *types.Package, prog *Program, done chan bool) {
 		}
 
 		for _, decl := range file.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok {
-				fname := fn.Name.Name
-				if fname == "main" || fname == "nmi" || fname == "irq" {
-					prog.Vectors[fname] = &decl
-					break
-				}
+			if fn, ok := isVector(decl); ok {
+				prog.Vectors[fn.Name.Name] = &decl
+				break
 			}
 		}
 
@@ -124,4 +121,13 @@ func (prog *Program) reject(pkg *types.Package) bool {
 	mutex.Unlock()
 
 	return contains
+}
+
+func isVector(decl ast.Decl) (*ast.FuncDecl, bool) {
+	if fn, ok := decl.(*ast.FuncDecl); ok {
+		fname := fn.Name.Name
+		return fn, fname == "main" || fname == "nmi" || fname == "irq"
+	}
+
+	return nil, false
 }
