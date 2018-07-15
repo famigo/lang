@@ -6,58 +6,76 @@ import (
 	"go/build"
 	"go/importer"
 	"go/parser"
-	"go/token"
 	"go/types"
 	"log"
+	"os"
+	"strings"
 	"sync"
+
+	"golang.org/x/tools/go/loader"
 )
 
-//Package contains the parsed files and the symbols type from a package
-type Package struct {
-	File *ast.File
-	Info *types.Info
-}
+var parsed sync.Map
 
-//Program is a parsed package
-type Program struct {
-	Pkgs    map[string]*Package
-	Vectors map[string]*ast.Decl
-}
-
-//Mode is the default parse mode with comments and reporting all errors
-const Mode = parser.ParseComments | parser.AllErrors
-
-const unknownPkgName = "?"
-
-//Fset is the AST file set
-var Fset = token.NewFileSet()
-
-var mutex = sync.Mutex{}
-
-//ParsePackage parses a package recursively
-func ParsePackage(pkgpath string) *Program {
-	prog := &Program{
-		Pkgs:    make(map[string]*Package),
-		Vectors: make(map[string]*ast.Decl, 3),
+//ParsePackage builds the program AST
+func ParsePackage(pkgpath string) *loader.Program {
+	conf := loader.Config{ParserMode: parser.ParseComments | parser.AllErrors}
+	conf.Import(pkgpath)
+	prog, err := conf.Load()
+	if err != nil {
+		log.Fatal(err)
 	}
-	wait := make(chan bool, 1)
-	parse(types.NewPackage(pkgpath, unknownPkgName), prog, wait)
-	<-wait
 
 	return prog
 }
 
-func parse(pkg *types.Package, prog *Program, done chan bool) {
-	defer func() {
-		done <- true
+//ParsePackageOld parses a package recursively
+func ParsePackageOld(pkgpath string) {
+	files := make(chan *ast.File)
+	infos := make(chan *types.Info)
+	jobs := &sync.WaitGroup{}
+	jobs.Add(1)
+
+	go func() {
+		for {
+			select {
+			case file, open := <-files:
+				if open {
+					Files = append(Files, file)
+
+					for _, decl := range file.Decls {
+						if fn, ok := isVector(decl); ok {
+							Vectors[fn.Name.Name] = &decl
+						}
+					}
+				} else {
+					return
+				}
+			case info, open := <-infos:
+				if open {
+					Infos = append(Infos, info)
+				} else {
+					return
+				}
+			}
+		}
 	}()
 
-	if prog.reject(pkg) {
+	go parse(pkgpath, files, infos, jobs)
+
+	jobs.Wait()
+	close(files)
+	close(infos)
+}
+
+func parse(pkgpath string, files chan<- *ast.File, infos chan<- *types.Info, jobs *sync.WaitGroup) {
+	defer jobs.Done()
+
+	if _, loaded := parsed.LoadOrStore(pkgpath, true); loaded {
 		return
 	}
 
-	pkgdir := fmt.Sprintf("%s/src/%s", build.Default.GOPATH, pkg.Path())
-	pkgs, err := parser.ParseDir(Fset, pkgdir, nil, Mode)
+	pkgs, err := parsePath(pkgpath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -66,35 +84,37 @@ func parse(pkg *types.Package, prog *Program, done chan bool) {
 		file := ast.MergePackageFiles(parsed, ast.FilterImportDuplicates|ast.FilterUnassociatedComments)
 		info := newInfo()
 		conf := types.Config{Importer: importer.Default()}
-		checked, err := conf.Check(pkg.Path(), Fset, []*ast.File{file}, info)
+		checked, err := conf.Check(pkgpath, Fset, []*ast.File{file}, info)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		pack, contains := prog.Pkgs[checked.Name()]
-		if !contains {
-			pack = new(Package)
-			prog.Pkgs[checked.Name()] = pack
-		}
-		pack.File = file
-		pack.Info = info
+		files <- file
+		infos <- info
 
-		wait := make(chan bool, len(checked.Imports()))
+		jobs.Add(len(checked.Imports()))
 		for _, imported := range checked.Imports() {
-			go parse(imported, prog, wait)
-		}
-
-		for _, decl := range file.Decls {
-			if fn, ok := isVector(decl); ok {
-				prog.Vectors[fn.Name.Name] = &decl
-				break
-			}
-		}
-
-		for i := 0; i < len(checked.Imports()); i++ {
-			<-wait
+			go parse(imported.Path(), files, infos, jobs)
 		}
 	}
+}
+
+func parsePath(path string) (map[string]*ast.Package, error) {
+	filter := func(f os.FileInfo) bool {
+		return !strings.HasSuffix(f.Name(), "_test.go")
+	}
+	mode := parser.ParseComments | parser.AllErrors
+	pkgdir := fmt.Sprintf("%s/src/%s", build.Default.GOPATH, path)
+	pkgs, err := parser.ParseDir(Fset, pkgdir, filter, mode)
+
+	if err != nil {
+		if _, notfound := err.(*os.PathError); notfound {
+			pkgdir := fmt.Sprintf("%s/src/%s", build.Default.GOROOT, path)
+			return parser.ParseDir(Fset, pkgdir, filter, mode)
+		}
+	}
+
+	return pkgs, err
 }
 
 func newInfo() *types.Info {
@@ -106,21 +126,6 @@ func newInfo() *types.Info {
 		Selections: make(map[*ast.SelectorExpr]*types.Selection),
 		Scopes:     make(map[ast.Node]*types.Scope),
 	}
-}
-
-func (prog *Program) reject(pkg *types.Package) bool {
-	if pkg.Name() == unknownPkgName {
-		return false
-	}
-
-	mutex.Lock()
-	_, contains := prog.Pkgs[pkg.Name()]
-	if !contains {
-		prog.Pkgs[pkg.Name()] = new(Package)
-	}
-	mutex.Unlock()
-
-	return contains
 }
 
 func isVector(decl ast.Decl) (*ast.FuncDecl, bool) {
