@@ -24,7 +24,7 @@ func (header *Header) Name() string {
 }
 
 func init() {
-	var names = [11]string{
+	var names = [...]string{
 		reflect.TypeOf(ines.DefaultCHR).String(),
 		reflect.TypeOf(ines.DefaultMAP).String(),
 		reflect.TypeOf(ines.DefaultMIR).String(),

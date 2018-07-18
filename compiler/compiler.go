@@ -1,14 +1,19 @@
 package compiler
 
 import (
+	"log"
 	"fmt"
 	"go/ast"
+	"go/build"
+	"go/token"
 	"go/types"
+	"os"
+	"path"
 	"strconv"
 
-	"github.com/famigo/lang/header"
+	"github.com/famigo/lang/constant"
 
-	"github.com/famigo/lang/pkgs"
+	"github.com/famigo/lang/header"
 
 	"github.com/famigo/lang/data"
 
@@ -28,6 +33,8 @@ var (
 	romchan    = make(chan *data.ROM)
 	headerchan = make(chan *header.Header)
 )
+
+var fset *token.FileSet
 
 func init() {
 	go func() {
@@ -51,6 +58,11 @@ func init() {
 	}()
 }
 
+//SetFset sets the file set
+func SetFset(fs *token.FileSet) {
+	fset = fs
+}
+
 //CompileGenDecl compiles all constants, registers, headers and roms
 func CompileGenDecl(decl *ast.GenDecl, pkginfo *loader.PackageInfo) {
 	for _, spec := range decl.Specs {
@@ -63,26 +75,33 @@ func CompileGenDecl(decl *ast.GenDecl, pkginfo *loader.PackageInfo) {
 
 				switch obj := o.(type) {
 				case *types.Const:
-					var val string
-					if basic, ok := obj.Type().Underlying().(*types.Basic); ok {
-						if basic.Info() == types.IsString {
-							continue
-						}
-						if basic.Info() == types.IsBoolean {
-							istrue, _ := strconv.ParseBool(obj.Val().String())
-							if istrue {
-								val = "1"
-							} else {
-								val = "0"
-							}
-						} else {
-							val = obj.Val().ExactString()
-						}
+					val, err := constant.ValueOf(obj)
+					if err != nil {
+						continue
 					}
 
-					if rom := data.VarRomOf(decl); rom != nil {
-						rom.Label = nameOf(obj)
-						rom.Code = val
+					if rom := data.VarRomOf(decl, vspec); rom != nil {
+						if rom.Inc() != "" {
+							inc := rom.Inc()
+							if !path.IsAbs(rom.Inc()) {
+								inc = path.Join(build.Default.GOPATH, "src", pkginfo.Pkg.Path(), inc)
+							}
+							file, err := os.Open(inc)
+							if err != nil {
+								doc := vspec.Doc
+								if doc == nil {
+									doc = decl.Doc
+								}
+								fmt.Fprintf(os.Stderr, "#%s\n", pkginfo.Pkg.Path())
+								fmt.Fprintf(os.Stderr, "%v: %v\n", fset.Position(doc.Pos()), err)
+								os.Exit(1)
+							}
+							file.Close()
+							rom.Code = fmt.Sprintf(`.include "%s"`, inc)
+						} else {
+							rom.Code = val
+						}
+						rom.Label = constant.NameOf(obj)
 						romchan <- rom
 						continue
 					}
@@ -93,19 +112,54 @@ func CompileGenDecl(decl *ast.GenDecl, pkginfo *loader.PackageInfo) {
 						headerchan <- h
 					}
 
-					if nam := nameOf(obj); nam != "" {
+					if nam := constant.NameOf(obj); nam != "" {
 						constchan <- fmt.Sprintf("%s = %s", nam, val)
 					}
 				case *types.Var:
+					if rom := data.VarRomOf(decl, vspec); rom != nil {
+
+						if a, ok := obj.Type().(*types.Array); ok {
+							rom.Code = strconv.Itoa(int(a.Len()))
+							romchan <- rom
+						}
+					}
 				}
 			}
 		}
 	}
 }
 
-func nameOf(cons *types.Const) string {
-	if cons.Name() == "_" {
-		return ""
+func valueOf(decl *ast.GenDecl, pkginfo *loader.PackageInfo) (interface{}, error) {
+
+	return nil, nil
+}
+
+//Preview compiled symbols
+func Preview() {
+	fmt.Println("---------")
+	fmt.Println("constants")
+	fmt.Println("---------")
+	for _, cons := range consts {
+		fmt.Println(cons)
 	}
-	return fmt.Sprintf("%s.%s", pkgs.NameOf(cons.Pkg()), cons.Name())
+
+	fmt.Println("----")
+	fmt.Println("roms")
+	fmt.Println("----")
+	for _, rom := range prgroms {
+		fmt.Println(rom)
+	}
+	for _, rom := range chrroms {
+		fmt.Println(rom)
+	}
+	for _, rom := range dmcroms {
+		fmt.Println(rom)
+	}
+
+	fmt.Println("------")
+	fmt.Println("header")
+	fmt.Println("------")
+	for hnam, hval := range headers {
+		fmt.Printf(".%s %d\n", hnam, hval)
+	}
 }

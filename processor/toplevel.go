@@ -1,13 +1,13 @@
 package processor
 
 import (
-	"fmt"
 	"go/ast"
 	"sync"
+	"time"
 
 	"github.com/famigo/lang/compiler"
 
-	 "github.com/famigo/lang/pkgs"
+	"github.com/famigo/lang/pkgs"
 	"golang.org/x/tools/go/loader"
 )
 
@@ -17,6 +17,7 @@ var mutex = new(sync.Mutex)
 //Process all constants, registers, headers, roms and vectors
 func processTopLevelDecls(prog *loader.Program) {
 	pkgs.Name(prog)
+	compiler.SetFset(prog.Fset)
 	group := new(sync.WaitGroup)
 	for _, pkginfo := range prog.AllPackages {
 		for _, file := range pkginfo.Files {
@@ -27,7 +28,9 @@ func processTopLevelDecls(prog *loader.Program) {
 		}
 	}
 	group.Wait()
-	fmt.Println(vectors)
+
+	time.Sleep(time.Second)
+	compiler.Preview()
 }
 
 func processTopLevelDecl(decl ast.Decl, pkginfo *loader.PackageInfo, group *sync.WaitGroup) {
