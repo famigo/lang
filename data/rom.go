@@ -27,11 +27,17 @@ const (
 
 //ROM is a compiled variable or function commented with the directive famigo:rom
 type ROM struct {
+	doc   *ast.CommentGroup
 	kind  Kind
 	bank  string
 	inc   string
 	Label string
 	Code  string
+}
+
+//Doc returns the source comment of the ROM 
+func (rom *ROM) Doc() *ast.CommentGroup {
+	return rom.doc
 }
 
 //Kind of the ROM: PRG, CHR or DMC
@@ -50,7 +56,7 @@ func (rom *ROM) Inc() string {
 }
 
 func (rom *ROM) String() string {
-	return fmt.Sprintf("famigo:%v rom:%s inc:%s\n%s:\n\t%s", rom.kind, rom.bank, rom.inc, rom.Label, rom.Code)
+	return fmt.Sprintf("famigo:%v rom:%s inc:%s\n%s:\n  %s", rom.kind, rom.bank, rom.inc, rom.Label, rom.Code)
 }
 
 var romregexp = regexp.MustCompile(`(?://|\\\*)\s*famigo:(prg|chr|dmc)(?:\s*rom:([0-9]|\?|\*))?(?:\s*inc:(.+))?`)
@@ -59,10 +65,10 @@ var romregexp = regexp.MustCompile(`(?://|\\\*)\s*famigo:(prg|chr|dmc)(?:\s*rom:
 //
 //Returns nil if not commented or if not a variable nor a constant declaration
 func VarRomOf(decl *ast.GenDecl, spec *ast.ValueSpec) *ROM {
-	if rom := parsePragma(spec.Doc); rom != nil {
+	if rom := ParseRomPragma(spec.Doc); rom != nil {
 		return rom
 	}
-	if rom := parsePragma(decl.Doc); rom != nil {
+	if rom := ParseRomPragma(decl.Doc); rom != nil {
 		return rom
 	}
 	return nil
@@ -72,7 +78,7 @@ func VarRomOf(decl *ast.GenDecl, spec *ast.ValueSpec) *ROM {
 //
 //Returns a default ROM with bank setted to AnyBank if not commented
 func FuncRomOf(decl *ast.FuncDecl) *ROM {
-	if rom := parsePragma(decl.Doc); rom != nil {
+	if rom := ParseRomPragma(decl.Doc); rom != nil {
 		return rom
 	}
 	return &ROM{
@@ -80,7 +86,10 @@ func FuncRomOf(decl *ast.FuncDecl) *ROM {
 		bank: AnyBank}
 }
 
-func parsePragma(comment *ast.CommentGroup) *ROM {
+//ParseRomPragma searches for the ROM pragma on a variable or function declaration and returns the proper ROM
+//
+//Returns nil if not found or malformed pragma 
+func ParseRomPragma(comment *ast.CommentGroup) *ROM {
 	if comment != nil {
 		lastline := comment.List[len(comment.List)-1].Text
 		match := romregexp.FindStringSubmatch(lastline)
@@ -92,6 +101,7 @@ func parsePragma(comment *ast.CommentGroup) *ROM {
 			}
 			incval := match[3]
 			return &ROM{
+				doc : comment,
 				kind: kindval,
 				bank: bankval,
 				inc:  incval}

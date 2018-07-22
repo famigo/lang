@@ -40,6 +40,5 @@ func ValueOf(obj *types.Const) (string, error) {
 			return obj.Val().ExactString(), nil
 		}
 	}
-
 	return "", new(NonConstantError)
 }

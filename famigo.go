@@ -1,11 +1,11 @@
 package main
 
 import (
+	"github.com/famigo/lang/compiler"
 	"fmt"
-	"github.com/famigo/lang/processor"
 )
 
 func main() {
-	processor.ProcessPackage("github.com/famigo/example/hello")
+	compiler.CompilePackage("github.com/famigo/example/hello")
 	fmt.Println("done")
 }

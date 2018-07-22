@@ -1,23 +1,16 @@
 package compiler
 
 import (
-	"log"
 	"fmt"
-	"go/ast"
-	"go/build"
-	"go/token"
-	"go/types"
-	"os"
-	"path"
-	"strconv"
+	"sync"
 
-	"github.com/famigo/lang/constant"
+	"github.com/famigo/lang/pkgs"
+
+	"github.com/famigo/lang/processor"
 
 	"github.com/famigo/lang/header"
 
 	"github.com/famigo/lang/data"
-
-	"golang.org/x/tools/go/loader"
 )
 
 var (
@@ -34,7 +27,7 @@ var (
 	headerchan = make(chan *header.Header)
 )
 
-var fset *token.FileSet
+var compiled = new(sync.Map)
 
 func init() {
 	go func() {
@@ -58,80 +51,23 @@ func init() {
 	}()
 }
 
-//SetFset sets the file set
-func SetFset(fs *token.FileSet) {
-	fset = fs
-}
+//CompilePackage compiles a FamiGo package
+func CompilePackage(pkgpath string) {
+	prog := processor.ProcessPackage(pkgpath)
 
-//CompileGenDecl compiles all constants, registers, headers and roms
-func CompileGenDecl(decl *ast.GenDecl, pkginfo *loader.PackageInfo) {
-	for _, spec := range decl.Specs {
-		if vspec, ok := spec.(*ast.ValueSpec); ok {
-			for _, ident := range vspec.Names {
-				o := pkginfo.ObjectOf(ident)
-				if o == nil {
-					continue
-				}
+	pkgs.Name(prog)
 
-				switch obj := o.(type) {
-				case *types.Const:
-					val, err := constant.ValueOf(obj)
-					if err != nil {
-						continue
-					}
-
-					if rom := data.VarRomOf(decl, vspec); rom != nil {
-						if rom.Inc() != "" {
-							inc := rom.Inc()
-							if !path.IsAbs(rom.Inc()) {
-								inc = path.Join(build.Default.GOPATH, "src", pkginfo.Pkg.Path(), inc)
-							}
-							file, err := os.Open(inc)
-							if err != nil {
-								doc := vspec.Doc
-								if doc == nil {
-									doc = decl.Doc
-								}
-								fmt.Fprintf(os.Stderr, "#%s\n", pkginfo.Pkg.Path())
-								fmt.Fprintf(os.Stderr, "%v: %v\n", fset.Position(doc.Pos()), err)
-								os.Exit(1)
-							}
-							file.Close()
-							rom.Code = fmt.Sprintf(`.include "%s"`, inc)
-						} else {
-							rom.Code = val
-						}
-						rom.Label = constant.NameOf(obj)
-						romchan <- rom
-						continue
-					}
-
-					if h := header.Of(obj.Type()); h != nil {
-						headervalue, _ := strconv.ParseUint(val, 10, 16)
-						h.Value = int16(headervalue)
-						headerchan <- h
-					}
-
-					if nam := constant.NameOf(obj); nam != "" {
-						constchan <- fmt.Sprintf("%s = %s", nam, val)
-					}
-				case *types.Var:
-					if rom := data.VarRomOf(decl, vspec); rom != nil {
-
-						if a, ok := obj.Type().(*types.Array); ok {
-							rom.Code = strconv.Itoa(int(a.Len()))
-							romchan <- rom
-						}
-					}
-				}
+	grp := new(sync.WaitGroup)
+	for _, pkginfo := range prog.AllPackages {
+		for _, file := range pkginfo.Files {
+			for _, decl := range file.Decls {
+				cmplr := newGenDeclCmplr(grp, prog, pkginfo)
+				cmplr.compile(decl)
 			}
 		}
 	}
-}
-
-func valueOf(decl *ast.GenDecl, pkginfo *loader.PackageInfo) (interface{}, error) {
-
-	return nil, nil
+	grp.Wait()
+	Preview()
 }
 
 //Preview compiled symbols
